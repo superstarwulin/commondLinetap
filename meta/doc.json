@@ -1,0 +1,22 @@
+{
+  "wormhole": {
+    "url": "http://wh.alibaba-inc.com/doc/index.html",
+    "tips": "wormhole容器文档"
+  },
+  "wh": {
+    "link": "wormhole"
+  },
+  "femodule": {
+    "url": "http://gitlab.alibaba-inc.com/mui/femodule-handbook/raw/master/book/index.html",
+    "tips": "femodule文档"
+  },
+  
+  "zebra": {
+    "url": "http://mui.tmall.net/doc/?spm=0.0.0.0.BpxcMF",
+    "tips":"zebra开发文档"
+  },
+  "mui": {
+    "url": "http://mui.tmall.net/doc/?spm=0.0.0.0.BpxcMF",
+    "tips":"mui开发文档"
+  }
+}

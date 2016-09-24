@@ -1,0 +1,568 @@
+#!/usr/bin/env node
+
+var program = require('commander');
+var path = require('path');
+var colors = require('colors');
+var multiline = require('multiline');
+var fs = require('fs-extra');
+var os = require('os');
+var request = require('npm-request');
+var pkg = require('../package.json');
+var childProcess = require('child_process');
+var execSync = require('child_process').execSync;
+var util = require('util');
+var log = require('../lib/log');
+var _ = require('lodash');
+var codeTrack = require('../lib/codetrack');
+var glob = require('glob');
+var semver = require('semver');
+
+var HOME = process.env.HOME;
+var CWD = process.cwd();
+var tapDir = path.join(HOME, '.tap');
+var tapCDNDir = path.join(tapDir, 'LocalCDNPath');
+
+
+// 因为需要在执行action之前先检查版本，而program.parse之后commands会立即开始执行了，所以需要等待一下
+var start = function(){ // default action when no sub command provided
+  program.outputHelp();
+}
+var WAIT = function(f){
+  return function(){
+    var args = arguments;
+    var _this = this;
+    start = function(){
+      f.apply(_this, args);
+    };
+  };
+}
+
+program.version(pkg.version, '-v, --version');
+
+program.usage(multiline(function () {;/*
+[command] [options]
+   */}));
+
+// make option `-v` case-insensitive
+process.argv = process.argv.map(function (arg) {
+ return (arg === '-V') ? '-v' : arg;
+});
+
+// tap命令扩展
+// var nodeModulesGlobalDir = path.join(process.argv[1],'../../lib/node_modules/@ali');
+// var nodeModulesTapDir = path.join(__dirname, '../node_modules/@ali');
+// var nodeModulesLocalDir = path.join(process.cwd(), './node_modules/@ali');
+// var nodeModulesTnpmrootDir = path.join((String(execSync('tnpm root -g')).match(/\/.+\/.+/)[0]), './@ali');
+// var nodeModulesDir = [nodeModulesGlobalDir,nodeModulesTapDir,nodeModulesLocalDir];
+// if (nodeModulesGlobalDir != nodeModulesTnpmrootDir) {
+//   nodeModulesDir.push(nodeModulesTnpmrootDir)
+// }
+// var pluginFiles = [];
+// _.forEach(nodeModulesDir, function(nmd) {
+//   curNodeModulesPluginFiles = glob.sync(nmd+'/tap-plugin-*/index.js');
+//   pluginFiles = pluginFiles.concat(curNodeModulesPluginFiles)
+//   if (curNodeModulesPluginFiles.length > 0) {
+//     _.forEach(curNodeModulesPluginFiles, function(file) {
+//       var pluginFile = require(file);
+//       var pcmd = pluginFile.command;
+//       if (pcmd) {
+//         var pcmdInstance = program
+//                             .command(pcmd.name)
+//                             .description(pcmd.description)
+//                             .usage('[options]');
+//         _.forEach(pcmd.options, function(option) {
+//           pcmdInstance.option.apply(pcmdInstance, option);
+//         });
+//         pcmdInstance.action(WAIT(pcmd.action));
+//       }
+//     })
+//   }
+// })
+
+if(process.argv[2]==='schema'){ //直接forward到schema，以免--help被tap捕获
+  codeTrack('tap.schema', 'tap.root');
+  var restArgs = process.argv.slice(3);
+  if(!fs.existsSync(path.join(CWD,'.tap','node_modules','@ali','zebra-schema-util','bin','schema'))){
+    return console.error("没有找到schema util (错误编号: E11)");
+  }
+  if(!restArgs.length){
+    restArgs = ['build', '199']; // special alias to make it handier
+  }
+  return childProcess.spawn(process.argv[0],
+    [path.join(CWD,'.tap','node_modules','@ali','zebra-schema-util','bin','schema')].concat(restArgs),{
+      cwd: CWD,
+      stdio: 'inherit'
+  });
+}
+
+program
+  .option("--debug", "输出详细的log")
+  .option("-l, --log-level <level>", "最低log输出等级(all,info(default),warn,error)", function parseLevel(level){
+    return +{all:0,info:1,warn:2,error:3}[level] //NaN if undefined
+  })
+  .option("--log-file <file>", "日志文件地址")
+  .option("--child", "如果你不知道这个选项的意义，请不要使用它")
+
+program.command('init [type]')
+  .usage(multiline(function () {/*
+[type]
+
+   examples:
+
+   $ tap init
+   $ tap init mui   初始化mui模块
+   $ tap init zebra 初始化zebra模块
+
+   templates:
+
+   http://gitlab.alibaba-inc.com/tap/template-mui
+   http://gitlab.alibaba-inc.com/tap/template-zebra
+   */}))
+  .description('初始化项目目录')
+  .option('-t, --templateDir <s>', '指定某个本地目录作为模板')
+  .action(WAIT(function (type, prog) {
+    codeTrack("tap.init", "tap.root");
+    require('../lib/init').exec(type, prog?prog.templateDir:null);
+  }));
+
+program.command('link [group]')
+  .usage(multiline(function () {/*
+<group>
+
+   examples:
+
+   $ tap link
+   $ tap link tm
+   $ tap link mui
+   */}))
+  .description('将当前目录链接到 ~/.tap/LocalCDNPath/[group]')
+  .action(WAIT(function (p) {
+    codeTrack('tap.link', 'tap.root');
+    var groupPath = '';
+    if(typeof p !== 'string'){
+      var stdout = String(execSync('git remote -v'));
+      var res = stdout.match(/:(.+?)\/(.+?)\.git/);
+      if(res){
+        var group = res[1];
+        log('从 git 中获取到 group-repo 名：', group);
+        groupPath = path.resolve(tapCDNDir, group);
+      }
+    }else{
+      groupPath = path.resolve(tapCDNDir, p);
+    }
+
+    if(!groupPath){
+      log('需要指定group，例如tap link tm (错误编号:E12)', 'error');
+      process.exit(0);
+    }
+
+    fs.ensureDirSync(groupPath);
+    try {
+      var cmd = util.format('ln -s -f %s %s', CWD, groupPath);
+      log('执行链接命令: ' + cmd);
+      execSync(cmd);
+      log('链接成功');
+    } catch (e) {
+      if (e.stack.toString().indexOf('exists') !== -1) {
+        log(groupPath, '下已存在重复链接', 'warn');
+      }else{
+        log(e.stack.toString());
+      }
+    }
+  }));
+
+program.command('build')
+  .description('执行项目构建')
+  .option('--dev', '构建测试版本')
+  .option('--release', '构建发布版本(default)')
+  .action(WAIT(function (prog) {
+    codeTrack('tap.build', 'tap.root');
+    var libgulp = require('../lib/gulp');
+    if(prog.dev){
+      libgulp('prebuild-dev',function(err){
+        if(!err || err === 'NOTFOUND'){
+          libgulp('build',function(err){
+            if(err){
+              log.error('build failed','tap gulp');
+            }
+          });
+        }
+      });
+    }else{
+      libgulp('prebuild',function(err){
+        if(!err || err === 'NOTFOUND'){ // ignore if not exist
+          require('../lib/getVersion')(function(version){
+            var pkgFile = path.join(CWD, 'package.json');
+            var pkg = require(pkgFile);
+            if (pkg.devDependencies) {
+              _.forEach(pkg.devDependencies, function(n, key) {
+                codeTrack('tap.plugins', 'tap.build', {
+                  group: key
+                })
+              });
+            }
+            if(version && pkg.version !== version){
+              log.info('用当前git分支版本号'+version+'将package.json版本号同步成'+version+'\n','tap build');
+              pkg.version = version;
+              fs.writeFileSync(pkgFile, JSON.stringify(pkg, null, 4), 'utf-8');
+            }
+            libgulp('build',function(err){
+              codeTrack('tap.buildend', 'tap.build');
+              if(!err){
+                log.info('build finished, package version: '+(version || pkg.version)+'\n','tap gulp');
+              }else{
+                log.error('build failed','tap gulp');
+              }
+            });
+          });
+        }
+      });
+    }
+  }));
+
+
+program.command('watch')
+  .description('启动 watch')
+  .action(WAIT(function () {
+    codeTrack('tap.watch', 'tap.root');
+    require('../lib/gulp')('watch');
+  }));
+
+
+program.command('assets')
+  .description('启动 CDN 文件映射服务')
+  .usage('[options]')
+  .option('-p, --port <n>', '端口号（默认80）', parseInt)
+  .option('-s, --sslPort <n>', 'SSL端口号（不指定则不监听https）', parseInt)
+  .option('-r, --root <s>', '指定某目录作为assets代理根目录')
+  .action(WAIT(function (prog) {
+    codeTrack('tap.assets', 'tap.root');
+
+    require('../lib/server').start({
+      type: 'assets',
+      port: prog.port || 80,
+      sslPort: prog.sslPort,
+      root: prog.root
+    });
+  }));
+
+
+program.command('server')
+  //.description('启动本地服务器，默认为Koa(Node)，可选为Webx和PHP')
+  .description('启动本地开发服务器')
+  .usage('[options]')
+  .option('-w,--wormhole', '启动wormhole server')
+  .option('--php', '启动php server')
+  .option('-p, --port <n>', '启动服务器使用的端口号', parseInt)
+  .option('-e, --example', '查看示例配置文件')
+  .action(WAIT(function (prog) {
+    codeTrack('tap.server', 'tap.root');
+    if(prog.example){
+      console.log(fs.readFileSync(path.join(__dirname, '..', 'sample/tap.js'), 'utf-8'));
+      process.exit(0);
+    }
+
+    var type = 'default';
+    if (prog.webx) {
+      codeTrack('tap.server.webx', 'tap.root');
+      type = 'webx';
+    } else if (prog.php) {
+      codeTrack('tap.server.php', 'tap.root');
+      type = 'php';
+    }
+
+    var cfg = {
+      type: type,
+      port: prog.port || 80,
+      disableVersionChecker: prog.disableVersionChecker
+    };
+    require('../lib/server').start(cfg);
+  }));
+
+
+program.command('monitor')
+  .description('本地端口转发中控')
+  .usage('[options]')
+  .option('-p, --port <n>', '端口号（默认80）', parseInt)
+  .option('--sslPort <n>', 'https端口号（默认443）', parseInt)
+  .option('-e, --example', '查看示例配置文件')
+  .action(WAIT(function(prog){
+    codeTrack('tap.monitor', 'tap.root');
+    if(prog.example){
+      console.log(fs.readFileSync(path.join(__dirname, '..', 'sample/tap.js'), 'utf-8'));
+      process.exit(0);
+    }
+    require('../lib/server').start({
+      type: 'forward',
+      port: prog.port || 80,
+      sslPort: prog.sslPort || 443
+    });
+  }));
+
+//program.command('proxy')
+//  .description('启动端口转发服务(准备移除，请使用tap server)')
+//  .usage('[options]')
+//  .option('-p, --port <n>', '端口号（默认80）', parseInt)
+//  .action(function (prog) {
+//    codeTrack('tap.proxy');
+//    log('tap proxy命令准备移除，请使用tap server代替', 'warn');
+//
+//    if (prog.example) {
+//      var fs = require('fs');
+//      console.log('示例配置（请手动创建~/.tap/tap.js）：'.green);
+//      console.log(fs.readFileSync(path.resolve(__dirname, '../sample/tap.js'), 'utf-8'));
+//      return;
+//    }
+//
+//    require('../lib/server').start({
+//      type: 'proxy',
+//      port: prog.port || 80
+//    });
+//  });
+
+program.command('doc [document]')
+  .usage(multiline(function () {/*
+[document]
+
+   examples:
+   $ tap doc
+   $ tap doc wh
+   $ tap doc zebra
+   */}))
+  .description('查看天猫前端开发环境&工具文档')
+  .action(WAIT(function(doc){
+    var docer = require("../lib/doc");
+    docer.browse(doc);
+  }));
+
+
+program.command('phpserver')
+  .description('在当前目录启动php server')
+  .option('-p, --port <n>', '端口号（默认80）', parseInt)
+  .action(WAIT(function(prog){
+    codeTrack('tap.phpserver', 'tap.root');
+    require('../lib/server').start({
+      type: 'php',
+      port: prog.port || 8080
+    });
+  }));
+
+program.command('update')
+  .description('升级当前项目的Template版本')
+  .option('-f, --force', '跳过一个需要手动升级的版本')
+  .action(WAIT(function(prog){
+    codeTrack('tap.update', 'tap.root');
+    require('../lib/update')({
+      force: prog.force
+    });
+  }));
+
+program.command('install')
+  .description('安装package.json描述的Template')
+  .option('-f, --force', '覆盖已有Template')
+  .action(WAIT(function(prog){
+    if(!prog.force && fs.existsSync(path.join(process.cwd(),'.tap'))){
+      return log.error('Template已经存在，使用-f选项覆盖原Template');
+    }
+    require('../lib/update')({
+      fix: true,
+      override: !!prog.force
+    });
+  }));
+
+program.command('reinstall')
+  .description('用DIP上注册的最新Template版本覆盖当前项目')
+  .option('-f, --force', '确认覆盖')
+  .action(WAIT(function(prog){
+    codeTrack('tap.reinstall', 'tap.root');
+    if(!prog.force){
+      log.warn('这个命令会跳过手动升级的步骤，可能导致tap无法正常工作。如果确定要执行，请使用 tap reinstall -f');
+    }else{
+      require('../lib/update')({
+        override: true
+      });
+    }
+  }));
+
+program.command('cert')
+  .description('创建自签名证书，参考 http://gitlab.alibaba-inc.com/tap/tap-doc/issues/3')
+  .option('-f, --force', '覆盖原有证书')
+  .option('-a, --android', '创建安卓的特殊格式证书文件')
+  .action(WAIT(function(prog){
+    codeTrack('tap.cert', 'tap.root');
+    var loc = path.join(HOME,'.tap','cert');
+    var opts = {
+      cwd: loc,
+      stdio: [0,1,2]
+    };
+
+    if(prog.android){
+      if(!fs.existsSync(loc)){
+        return log.error('尚无证书，请先使用tap cert生成证书','tap cert');
+      }
+      var subjectHash = execSync('openssl x509 -inform PEM -subject_hash -in server.crt | head -1', {cwd:loc}).toString().trim();
+      var certName = subjectHash + '.0';
+      if(fs.existsSync(path.join(loc,certName))){
+        return log.error('安卓版证书已存在，无需再次生成','tap cert');
+      }
+      log.important('HASH: '+subjectHash,'tap cert');
+      execSync('cat server.crt > '+certName,opts);
+      execSync('openssl x509 -inform PEM -text -in server.crt >> '+certName,opts);
+      log.info('安卓版证书生成完毕，可以参考 http://gitlab.alibaba-inc.com/tap/tap-doc/issues/4 将其安装到安卓设备上');
+    }else{
+      if(!prog.force && fs.existsSync(loc)){
+        return log.error('证书已存在，如有需要请加-f选项覆盖原证书','tap cert');
+      }
+      var opensslConfig = path.join(__dirname,'..','server','cert','openssl.cnf');
+      log.info('开始生成证书','tap cert');
+      fs.removeSync(loc);
+      fs.ensureDirSync(loc);
+      // 生成根证书，原因建<http://gitlab.alibaba-inc.com/tap/tap-doc/issues/15>
+      execSync('openssl genrsa -out tap_ca.key 2048',{cwd:loc});
+      execSync('openssl req -new -out tap_ca.csr -key tap_ca.key -config '+opensslConfig,{cwd:loc});
+      execSync('openssl x509 -req -days 3650 -sha256 -in tap_ca.csr -signkey tap_ca.key -out tap_ca.crt',{cwd:loc});
+      // 生成server证书
+      execSync('openssl genrsa -out server.key 2048',{cwd:loc});
+      execSync('openssl req -new -out server.csr -key server.key -config '+opensslConfig,{cwd:loc})
+      execSync('openssl x509 -req -days 3650 -sha256 -CA tap_ca.crt -CAkey tap_ca.key -CAcreateserial -in server.csr -out server.crt -extensions v3_req -extfile '+opensslConfig,{cwd:loc});
+      fs.copySync(loc+'/tap_ca.crt', HOME+'/tap_ca.crt');
+      log.info('证书创建完毕，并已复制一份到<~/tap_ca.crt>','tap cert');
+      log.info('你可以参考 http://gitlab.alibaba-inc.com/tap/tap-doc/issues/2 将其添加到信任列表，之后删除','tap cert');
+    }
+  }));
+
+program.command('schema')
+  .description('schema工具集')
+  .action(WAIT(function(){
+    log.important('Unexpected Error', 'tap schema');
+  }));
+
+program.command('fetch')
+  .description('将feDependencies下载到本地')
+  .action(WAIT(function(){
+    var pkg = require(path.join(CWD, 'package.json'));
+
+    var destdir = path.join(process.env.HOME,'.wormhole','tms','tmall','module');
+    var tempdir = path.join(os.tmpDir(), 'taptmp', String(+new Date));
+    fs.ensureDirSync(destdir);
+    fs.ensureDirSync(tempdir);
+
+    var mod,ver;
+    for(mod in pkg.feDependencies) {
+      ver = pkg.feDependencies[mod].trim();
+      mod = mod.trim().slice(4);
+
+      if(fs.existsSync(path.join(destdir,mod,ver))){
+        log.all('模块 ' + mod.green + ' 已经存在，跳过');
+        continue;
+      }
+
+      log.all('正在安装模块 ' + mod.green);
+      try{
+        execSync('git clone git@gitlab.alibaba-inc.com:mui/' + mod + '.git', {
+          cwd: tempdir
+        });
+        if(~ver.indexOf('x')){ // 3.0.x型的先figure out到底是哪个版本
+          var Version = require('../lib/util').Version;
+          var candidates = ('' + childProcess.execSync("git tag -l ", {
+            cwd: path.join(tempdir,mod)
+          }))
+            .split('\n')
+            .filter(_.identity)
+            .map(function(x){return new Version(x);})
+            .filter(function(x){
+              return x.arr[0] === +ver.split('.')[1];
+            });
+          if(!candidates.length){
+            return log.error(mod+'版本号为'+ver+', 但是不存在满足条件的版本');
+          }
+          ver = _.max(candidates,'num').str.slice(8);
+        }
+        execSync('git checkout publish/' + ver, {
+          cwd: path.join(tempdir,mod)
+        });
+        fs.ensureDirSync(path.join(destdir,mod,ver));
+        execSync('cp -r -f ' + path.join(tempdir,mod,'src') + '/ ' + path.join(destdir,mod,ver));
+      }catch(e){
+        log.error('模块'+mod+'安装时发生异常');
+        log.all(e);
+        continue;
+      }
+      log.all('模块 ' + mod.green + ' 安装完毕');
+    }
+
+    mod ? log.info('依赖模块安装成功~') : log.info('没有找到需要安装的模块');
+  }));
+
+program.on('--help', function(){
+  console.log('  Examples:');
+  console.log('');
+  console.log('    $ tap init -h');
+  console.log('    $ tap link -h');
+  console.log('    $ tap server');
+  console.log('    $ tap build');
+  console.log('');
+  console.log('  FAQ: http://gitlab.alibaba-inc.com/tap/tap-doc/issues/1');
+  console.log('');
+});
+
+program.parse(process.argv);
+
+// if (pluginFiles.length > 0) {
+//   _.forEach(pluginFiles, function(file) {
+//     var pluginFile = require(file);
+//     if (pluginFile.autoRun) {
+//       pluginFile.autoRun();
+//     }
+//   });
+// }
+
+
+if(!program.child){
+  log.setLevel(program.logLevel)
+    .setDebug(program.debug)
+    .initLogFile(program.logFile);
+}else{
+  log.setChild()
+}
+log.init();
+
+var nodeVersion = String(execSync('node -v'));
+if (!(semver.gte(nodeVersion, '4.0.0'))) {
+  log.error('您当前使用的node版本小于4.x,请升级。\n升级node版本可以参考：\nhttp://node.alibaba-inc.com/env/README.html?spm=0.0.0.0.PfruZg');
+  process.exit(0);
+}
+
+if(!program.child){
+  var root;
+  if (process.platform === 'win32') {
+    root = process.env.USERPROFILE || process.env.APPDATA || process.env.TMP || process.env.TEMP;
+  } else {
+    root = process.env.HOME || process.env.TMPDIR || '/tmp';
+  }
+
+  request({
+    method: 'get',
+    path: '@ali/tap/latest'
+  }, {
+    registry: 'http://registry.npm.alibaba-inc.com',
+    configFile: path.join(root, '.tnpmrc')
+  }, function (err, data) {
+    if (err) {
+      log.warn('无法检查tap最新版本，可能是由于网络异常\n');
+    } else if (data.version && pkg.version !== data.version) {
+      var Version = require('../lib/util').Version;
+      var dataVer = new Version(data.version);
+      var pkgVer = new Version(pkg.version);
+      log.important('tap 推荐版本是 ' + data.version
+        + ', 本地版本是 ' + pkg.version
+        + '.\n你可以执行 tnpm install -g @ali/tap 来安装推荐的版本', 'tap cli');
+      if(dataVer.arr[0] > pkgVer.arr[0]){
+        return log.error("tap版本过低，必须先进行升级才能继续使用");
+      }
+    }
+    start();
+  });
+}else{
+  start();
+}

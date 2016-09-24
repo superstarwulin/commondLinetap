@@ -1,0 +1,411 @@
+#!/usr/bin/env node
+
+var program = require('commander');
+var path = require('path');
+var colors = require('colors');
+var multiline = require('multiline');
+var fs = require('fs-extra');
+var request = require('npm-request');
+var pkg = require('../package.json');
+var sendTrack = require('../lib/tracker');
+var execSync = require('child_process').execSync;
+var util = require('util');
+var log = require('../lib/log');
+
+var HOME = process.env.HOME;
+var CWD = process.cwd();
+var tapDir = path.join(HOME, '.tap');
+var tapCDNDir = path.join(tapDir, 'LocalCDNPath');
+
+global.codeTrack=global.codeTrack||(function () {
+  var trackMap = {}, firstName = "";
+  return function (pvLev, name, datumName, config) {
+    config = config || {};
+    if (config.reject) {
+      if (typeof(config.reject) != "object") {
+        config.reject = [config.reject];
+      }
+      for (var i = config.reject.length - 1; i >= 0; i--) {
+        if (trackMap[config.reject[i]]) {
+          return;
+        }//实现互斥功能
+      }
+    }
+    if (!firstName) {//记录第一个采样
+      firstName = name;
+    }
+    var now = new Date().valueOf();
+    trackMap[name] = now;//记录此采样，不管是否命中采样都需要记录
+
+    // 计算时间参数
+    var t;
+    if (name == firstName) {
+      var startTime = global.g_config && g_config.startTime;
+      t = startTime ? (now - startTime) : 0;
+    }
+    else {
+      t = now - (trackMap[datumName || firstName] || trackMap[firstName]);
+    }
+
+    switch (config.autoGroup) {
+      case "time":
+        config.group = config.autoGroup + "_" + (t <= 0 ? 0 : Math.floor(Math.log(t) / Math.log(2)));
+        break;
+    }
+    if (config.group) {//采样分组
+      name = name + "|" + config.group;
+    }
+    if (typeof(pvLev) == "object") {//pv参数分组
+      pvLev = pvLev[config.group || "_"] || 0;
+    }
+    var distribution = [],
+      timeFactor = (distribution && distribution[Math.floor((now + 28800000) / (86400000 / 144)) % 144]) || 1,
+      sampling = Math.round(Math.max(Math.pow(2, pvLev) * timeFactor / (undefined || 8192), 1 / (undefined || (1 / 16))));
+//    if (Math.floor(Math.random() * sampling) > 0) {
+//      return;
+//    }
+
+    var url = 'http://tap.tmall.com/track-1/',
+      msg = [
+          '[u' + url + ']',
+          '[t' + t + ']',
+          '[c' + (function anonymous() {
+          return pkg.version
+        })() + '|' + name + ']',
+          '[r' + sampling + ']'
+      ].join("");
+    var res = process.env.HOME.match(/\/Users\/(.+)/);
+    var nick = "", result;
+    nick = res ? res[1] : null;
+    //var n = 'jsFeImage_' + now + "_" + Math.random();
+    var http = require('http');
+    var url = "http://gm.mmstat.com/jstracker.2?" + [
+      "type=9",
+      "id=jstracker",
+      "v=0.01",
+      //"nick=" + encodeURIComponent(nick),
+      //"islogin=0",
+        "msg=" + encodeURIComponent(msg),
+        "file=" + encodeURIComponent(url),
+        "line=" + sampling,
+      //"scrolltop=" + ((document.documentElement && document.documentElement.scrollTop) || (document.body && document.body.scrollTop) || 0),
+      //"screen=" + screen.width + "x" + screen.height,
+        "t=" + t
+    ].join("&");
+    //console.log(url);
+    http.get(url, function(res){
+      res.on('data', function(trunk){
+        //console.log(1);
+      });
+      //console.log(res.statusCode);
+      res.on('end', function(){
+        //console.log('yeah!');
+        //global[n] = null;
+      }).on('error', function(e){
+        //console.log('error');
+      });
+    });
+
+
+    //	img = global[n] = new Image();
+//								img.onload = img.onerror = function () {
+//                                    global[n] = null;
+//								};
+    //img.src = ;
+    //img = null;
+  }
+})();codeTrack(20,'tap.start');
+
+colors.setTheme({
+  silly: 'rainbow',
+  input: 'grey',
+  verbose: 'cyan',
+  prompt: 'grey',
+  info: 'green',
+  data: 'grey',
+  help: 'cyan',
+  warn: 'yellow',
+  debug: 'blue',
+  error: 'red'
+});
+
+program
+  .version(pkg.version)
+  .usage(multiline(function () {;/*
+   [command] [options]
+   */}));
+
+program.command('init [type]')
+  .usage(multiline(function () {/*
+   [type]
+
+   examples:
+
+   $ tap init
+   $ tap init mui   初始化mui模块
+   $ tap init zebra 初始化zebra模块
+
+   templates:
+
+   http://gitlab.alibaba-inc.com/tap/template-mui
+   http://gitlab.alibaba-inc.com/tap/template-zebra
+   */}))
+  .description('初始化项目目录')
+  //.option('-t, --templateDir <s>', '指定某个本地目录作为模板')
+  .action(function (prog) {
+    codeTrack(20, "tap.init");
+    sendTrack({
+      action: 'init',
+      args: '',
+      version: pkg.version,
+      type: 'tap3',
+      path: path.resolve()
+    });
+    require('../lib/init').exec(prog, prog?prog.templateDir:null);
+  });
+
+program.command('link [group]')
+  .usage(multiline(function () {/*
+   <group>
+
+   examples:
+
+   $ tap link tm
+   $ tap link mui
+   */}))
+  .description('将当前目录链接到 ~/.tap/LocalCDNPath/[group]')
+  .action(function (p) {
+    codeTrack(20,'tap.link');
+    var groupPath = '';
+    if(typeof p !== 'string'){
+      var stdout = String(execSync('git remote -v'));
+      var res = stdout.match(/:(.+?)\/(.+?)\.git/);
+      if(res){
+        var group = res[1];
+        log('从 git 中获取到 group-repo 名：', group);
+        groupPath = path.resolve(tapCDNDir, group);
+      }
+    }else{
+      groupPath = path.resolve(tapCDNDir, p);
+    }
+
+    if(!groupPath){
+      log('需要指定group，例如tap link tm', 'error');
+      process.exit(0);
+    }
+
+    fs.ensureDirSync(groupPath);
+    try {
+      var cmd = util.format('ln -s %s %s', CWD, groupPath);
+      console.log(cmd);
+      execSync(cmd);
+      log('链接成功');
+    } catch (e) {
+      if (e.stack.toString().indexOf('exists') !== -1) {
+        log(groupPath, '下已存在重复链接', 'warn');
+      }else{
+        console.log(e.stack);
+      }
+    }
+  });
+
+program.command('build')
+  .description('执行项目构建')
+  .action(function () {
+    codeTrack(20,'tap.build');
+
+    sendTrack({
+      action: 'build',
+      args: '--default',
+      version: pkg.version,
+      type: 'tap3',
+      path: path.resolve()
+    });
+
+    require('../lib/gulp').exec(['build']);
+  });
+
+
+program.command('watch')
+  .description('启动 watch')
+  .action(function () {
+    codeTrack(20,'tap.watch');
+    sendTrack({
+      action: 'watch',
+      args: '--gulp watch',
+      version: pkg.version,
+      type: 'tap3',
+      path: path.resolve()
+    });
+    require('../lib/gulp').exec(['watch']);
+  });
+
+
+program.command('assets')
+  .description('启动 CDN 文件映射服务')
+  .usage('[options]')
+  .option('-p, --port <n>', '端口号（默认80）', parseInt)
+  //.option('-s, --sslPort <n>', 'https端口号（默认443）', parseInt)
+  .option('-r, --root <s>', '指定某目录作为assets代理根目录')
+  .action(function (prog) {
+    codeTrack(20,'tap.assets');
+    sendTrack({
+      action: 'assets',
+      args: '',
+      version: pkg.version,
+      type: 'tap3',
+      path: path.resolve()
+    });
+
+    require('../lib/server').start({
+      type: 'assets',
+      port: prog.port || 80,
+      sslPort: prog.sslPort || 443,
+      root: prog.root
+    });
+  });
+
+
+program.command('server')
+  //.description('启动本地服务器，默认为Koa(Node)，可选为Webx和PHP')
+  .description('启动本地开发服务器')
+  .usage('[options]')
+  .option('-w,--wormhole', '启动wormhole server')
+  .option('--php', '启动php server')
+  .option('-p, --port <n>', '启动服务器使用的端口号', parseInt)
+  .option('-e, --example', '查看示例配置文件')
+  .action(function (prog) {
+    codeTrack(20,'tap.server');
+    if(prog.example){
+      console.log(fs.readFileSync(path.join(__dirname, '..', 'sample/tap.js'), 'utf-8'));
+      console.log('//在你的项目目录创建一个tap.conf.js文件，内容参考上面')
+      process.exit(0);
+    }
+
+    var type = 'default';
+    if (prog.webx) {
+      type = 'webx';
+    } else if (prog.php) {
+      type = 'php';
+    }
+
+    var cfg = {
+      type: type,
+      port: prog.port || 80
+    };
+
+    sendTrack({
+      action: 'server',
+      args: '--' + type,
+      version: pkg.version,
+      type: 'tap3',
+      path: path.resolve()
+    });
+
+    require('../lib/server').start(cfg);
+  });
+
+
+program.command('monitor')
+  .description('本地端口转发中控')
+  .usage('[options]')
+  .option('-p, --port <n>', '端口号（默认80）', parseInt)
+  .option('-e, --example', '查看示例配置文件')
+  .action(function(prog){
+    codeTrack(20,'tap.monitor');
+    sendTrack({
+      action: 'forward',
+      args: '',
+      version: pkg.version,
+      type: 'tap3',
+      path: path.resolve()
+    });
+
+    require('../lib/server').start({
+      type: 'forward',
+      port: prog.port || 80
+    });
+  });
+
+program.command('proxy')
+  .description('启动端口转发服务(准备移除，请使用tap server)')
+  .usage('[options]')
+  .option('-p, --port <n>', '端口号（默认80）', parseInt)
+  .action(function (prog) {
+    codeTrack(20,'tap.proxy');
+    log('tap proxy命令准备移除，请使用tap server代替', 'warn');
+
+    if (prog.example) {
+      var fs = require('fs');
+      console.log('示例配置（请手动创建~/.tap/tap.js）：'.green);
+      console.log(fs.readFileSync(path.resolve(__dirname, '../sample/tap.js'), 'utf-8'));
+      return;
+    }
+
+    sendTrack({
+      action: 'proxy',
+      args: '',
+      version: pkg.version,
+      type: 'tap3',
+      path: path.resolve()
+    });
+
+    require('../lib/server').start({
+      type: 'proxy',
+      port: prog.port || 80
+    });
+  });
+
+var root;
+if (process.platform === 'win32') {
+  root = process.env.USERPROFILE || process.env.APPDATA || process.env.TMP || process.env.TEMP;
+} else {
+  root = process.env.HOME || process.env.TMPDIR || '/tmp';
+}
+
+var timeout = setTimeout(function () {
+  exec();
+}, 500);
+
+request({
+  method: 'get',
+  path: '@ali/tap/latest'
+}, {
+  registry: 'http://registry.npm.alibaba-inc.com',
+  configFile: path.join(root, '.tnpmrc')
+}, function (err, data) {
+  clearTimeout(timeout);
+  if (err) {
+    // if error, ignore check
+    return exec();
+  }
+  if (data.version && pkg.version !== data.version) {
+    console.warn('%s tap 推荐版本是 %s, 本地版本是 %s.' +
+        '\n%s 你可以执行 %s 来安装此版本\n%s 如果提示没有权限，请尝试 %s\n',
+      '[warn]'.yellow, data.version.green, pkg.version.yellow,
+      '[warn]'.yellow, ('tnpm install -g @ali/tap').green,
+      '[warn]'.yellow, ('sudo tnpm install -g @ali/tap').green);
+  }
+  exec();
+});
+
+program.on('--help', function(){
+  console.log('  Examples:');
+  console.log('');
+  console.log('    $ tap init -h');
+  console.log('    $ tap link -h');
+  console.log('    $ tap server');
+  console.log('    $ tap build');
+  console.log('');
+});
+
+function start() {
+  program.parse(process.argv);
+  if (!process.argv.slice(2).length) {
+    program.outputHelp();
+  }
+}
+
+function exec() {
+  start();
+}

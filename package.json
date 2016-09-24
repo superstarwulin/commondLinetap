@@ -1,0 +1,68 @@
+{
+  "name": "@ali/tap",
+  "version": "3.3.16",
+  "bin": {
+    "tap": "./bin/tap"
+  },
+  "author": {
+    "name": "饭鱼",
+    "email": "fanyu.xhy@tmall.com"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@ali/codetrack": "*",
+    "@ali/koa-assets": "*",
+    "async": "^0.9.0",
+    "colors": "^0.6.2",
+    "commander": "~2.9.0",
+    "ejs": "^2.2.3",
+    "fs-extra": "~0.15.0",
+    "glob": "~5.0.15",
+    "gulp": "3.8.*",
+    "http-proxy": "^1.4.3",
+    "koa": "^0.11.0",
+    "koa-join": "*",
+    "lodash": "^3.0.0",
+    "multiline": "~1.0.2",
+    "npm-request": "0.0.4",
+    "open": "0.0.5",
+    "optimist": "^0.6.1",
+    "semver": "~5.0.1",
+    "urllib": "~2.3.9",
+    "walker": "~1.0.6"
+  },
+  "publishConfig": {
+    "registry": "http://registry.npm.alibaba-inc.com"
+  },
+  "readmeFilename": "README.md",
+  "gitHead": "2ee5187053cc1ab7709c1cac03fb26e95f59a364",
+  "description": "",
+  "_id": "@ali/tap@2.1.5",
+  "scripts": {},
+  "_shasum": "30d117037162fb8d2f5a0bba889bb5641f25074f",
+  "_from": "@ali/tap@*",
+  "_npmVersion": "1.3.0",
+  "_nodeVersion": "0.11.12",
+  "_npmUser": {
+    "name": "fanyu.xhy",
+    "email": "fanyu.xhy@alibaba-inc.com"
+  },
+  "maintainers": [
+    {
+      "name": "fanyu.xhy",
+      "email": "fanyu.xhy@taobao.com"
+    },
+    {
+      "name": "tianxiang.wly",
+      "email": "tianxiang.wly@alibaba-inc.com"
+    },
+    {
+      "name": "shiwei.zsw",
+      "email": "shiwei.zsw@alibaba-inc.com"
+    },
+    {
+      "name": "tiejun",
+      "email": "tiejun@tmall.com"
+    }
+  ]
+}
